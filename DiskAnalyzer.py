@@ -20,6 +20,7 @@ import threading
 import webbrowser
 import argparse
 import platform
+import html
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -269,6 +270,37 @@ def size_color(size_bytes: int) -> str:
 
 
 # =============================================================================
+# THEME  —  tokens sémantiques : (couleur_claire, couleur_sombre)
+# =============================================================================
+# CustomTkinter résout le tuple selon set_appearance_mode(). Changer de thème
+# repeint donc TOUS les widgets CTk automatiquement, sans re-render.
+# (Seul ttk.Treeview, non-CTk, est restylé à la main via configure_style.)
+
+COL = {
+    #                (clair,       sombre)
+    "bg":          ("#eceff4",   "#0b0f17"),   # fond fenêtre / onglets
+    "chrome":      ("#ffffff",   "#121826"),   # toolbar, barre de statut
+    "chrome_alt":  ("#e7ebf1",   "#0f1420"),   # en-têtes de table, barre d'onglets
+    "surface":     ("#ffffff",   "#1b2334"),   # cartes, champs, zone d'arbre
+    "surface_alt": ("#f3f5f9",   "#161d2b"),   # lignes alternées (zebra)
+    "hover":       ("#e0e5ed",   "#273248"),   # survol générique
+    "track":       ("#dfe4ea",   "#080b12"),   # fond des barres (progression / taille)
+    "border":      ("#d5dbe4",   "#2c3750"),
+    "border_hi":   ("#c1c9d5",   "#3a475f"),   # survol bouton "parcourir"
+    "text":        ("#1a2432",   "#eef2f8"),   # texte principal
+    "text_muted":  ("#586377",   "#a6b3cc"),   # texte secondaire
+    "text_faint":  ("#818da0",   "#727e97"),   # méta / tertiaire
+    "accent":      ("#2563eb",   "#3b82f6"),   # action principale, sélection
+    "accent_hi":   ("#1d4ed8",   "#2563eb"),   # survol accent
+    "accent_2":    ("#2563eb",   "#3b82f6"),   # logo, barre de progression
+    "danger":      ("#dc2626",   "#7f1d1d"),   # bouton annuler
+    "danger_hi":   ("#b91c1c",   "#991b1b"),
+    "info_btn":    ("#e0ecff",   "#1e3a5f"),   # bouton export HTML
+    "info_btn_hi": ("#c7ddff",   "#1e4976"),
+}
+
+
+# =============================================================================
 # CUSTOM WIDGETS
 # =============================================================================
 
@@ -276,32 +308,35 @@ class StyledTreeview(ttk.Treeview):
     """Treeview avec style sombre personnalisé."""
 
     @staticmethod
-    def configure_style():
+    def configure_style(mode: str = "light"):
+        """Applique le style ttk (Treeview + scrollbar) pour le mode donné.
+        ttk n'accepte pas les tuples : on sélectionne l'index 0 (clair) ou 1 (sombre)."""
+        i = 0 if mode == "light" else 1
         style = ttk.Style()
         style.theme_use("default")
 
         # Treeview
         style.configure("Dark.Treeview",
-            background="#1a2235",
-            foreground="#e2e8f0",
-            fieldbackground="#1a2235",
+            background=COL["surface"][i],
+            foreground=COL["text"][i],
+            fieldbackground=COL["surface"][i],
             borderwidth=0,
             font=("Segoe UI", 10),
             rowheight=28,
         )
         style.configure("Dark.Treeview.Heading",
-            background="#111827",
-            foreground="#8899b4",
+            background=COL["chrome_alt"][i],
+            foreground=COL["text_muted"][i],
             borderwidth=0,
             font=("Segoe UI", 9, "bold"),
             relief="flat",
         )
         style.map("Dark.Treeview",
-            background=[("selected", "#2563eb")],
+            background=[("selected", COL["accent"][i])],
             foreground=[("selected", "#ffffff")],
         )
         style.map("Dark.Treeview.Heading",
-            background=[("active", "#1e293b")],
+            background=[("active", COL["hover"][i])],
         )
 
         # Remove borders
@@ -309,20 +344,33 @@ class StyledTreeview(ttk.Treeview):
             ('Dark.Treeview.treearea', {'sticky': 'nswe'})
         ])
 
+        # Scrollbar verticale assortie au thème
+        style.configure("Vertical.TScrollbar",
+            background=COL["chrome_alt"][i],
+            troughcolor=COL["bg"][i],
+            bordercolor=COL["bg"][i],
+            arrowcolor=COL["text_muted"][i],
+            borderwidth=0,
+            relief="flat",
+        )
+        style.map("Vertical.TScrollbar",
+            background=[("active", COL["hover"][i]), ("pressed", COL["accent"][i])],
+        )
+
 
 class StatusBar(ctk.CTkFrame):
     """Barre de statut en bas de la fenetre."""
 
     def __init__(self, parent, **kwargs):
-        super().__init__(parent, height=30, corner_radius=0, fg_color="#0f172a", **kwargs)
+        super().__init__(parent, height=30, corner_radius=0, fg_color=COL["chrome"], **kwargs)
         self.pack_propagate(False)
 
         self.label = ctk.CTkLabel(self, text="Pret", font=("JetBrains Mono", 11),
-                                   text_color="#5a6a85", anchor="w")
+                                   text_color=COL["text_faint"], anchor="w")
         self.label.pack(side="left", padx=12, fill="x", expand=True)
 
         self.size_label = ctk.CTkLabel(self, text="", font=("JetBrains Mono", 11),
-                                        text_color="#5a6a85", anchor="e")
+                                        text_color=COL["text_faint"], anchor="e")
         self.size_label.pack(side="right", padx=12)
 
     def update_text(self, text: str, size_text: str = ""):
@@ -344,14 +392,20 @@ class DiskAnalyzerApp(ctk.CTk):
         self.title("DiskAnalyzer")
         self.geometry("1400x850")
         self.minsize(900, 600)
-        ctk.set_appearance_mode("dark")
+
+        # --- Thème (clair par défaut, restauré depuis la config) ---
+        self._cfg = self._load_config()
+        self.mode = self._cfg.get("theme", "light")
+        if self.mode not in ("light", "dark"):
+            self.mode = "light"
+        ctk.set_appearance_mode(self.mode)
         ctk.set_default_color_theme("blue")
 
         # Icon (optionnel)
         try:
             if platform.system() == "Windows":
                 self.iconbitmap(default="")
-        except:
+        except Exception:
             pass
 
         # --- State ---
@@ -370,7 +424,7 @@ class DiskAnalyzerApp(ctk.CTk):
         self.initial_depth = max_depth
 
         # --- Configure treeview style ---
-        StyledTreeview.configure_style()
+        StyledTreeview.configure_style(self.mode)
 
         # --- Build UI ---
         self._build_toolbar()
@@ -393,7 +447,7 @@ class DiskAnalyzerApp(ctk.CTk):
 
     def _build_toolbar(self):
         """Barre d'outils superieure."""
-        toolbar = ctk.CTkFrame(self, height=60, corner_radius=0, fg_color="#0f172a",
+        toolbar = ctk.CTkFrame(self, height=60, corner_radius=0, fg_color=COL["chrome"],
                                 border_width=0)
         toolbar.pack(fill="x", side="top")
         toolbar.pack_propagate(False)
@@ -403,14 +457,14 @@ class DiskAnalyzerApp(ctk.CTk):
         logo_frame.pack(side="left", padx=16)
 
         logo_box = ctk.CTkFrame(logo_frame, width=36, height=36, corner_radius=8,
-                                 fg_color="#3b82f6")
+                                 fg_color=COL["accent_2"])
         logo_box.pack(side="left", padx=(0, 10))
         logo_box.pack_propagate(False)
         ctk.CTkLabel(logo_box, text="DA", font=("Segoe UI", 13, "bold"),
                       text_color="white").place(relx=0.5, rely=0.5, anchor="center")
 
         ctk.CTkLabel(logo_frame, text="DiskAnalyzer",
-                      font=("Segoe UI", 17, "bold"), text_color="#e2e8f0"
+                      font=("Segoe UI", 17, "bold"), text_color=COL["text"]
                       ).pack(side="left")
 
         # Path input
@@ -418,41 +472,42 @@ class DiskAnalyzerApp(ctk.CTk):
         path_frame.pack(side="left", fill="x", expand=True, padx=20)
 
         ctk.CTkLabel(path_frame, text="Chemin :", font=("Segoe UI", 12),
-                      text_color="#8899b4").pack(side="left", padx=(0, 8))
+                      text_color=COL["text_muted"]).pack(side="left", padx=(0, 8))
 
         self.entry_path = ctk.CTkEntry(path_frame, placeholder_text="C:\\",
                                          font=("JetBrains Mono", 12),
                                          height=34, corner_radius=6,
-                                         fg_color="#1a2235", border_color="#2a3550",
-                                         text_color="#e2e8f0")
+                                         fg_color=COL["surface"], border_color=COL["border"],
+                                         text_color=COL["text"])
         self.entry_path.pack(side="left", fill="x", expand=True)
-        default_path = self.initial_path or ("C:\\" if platform.system() == "Windows" else "/")
+        default_path = (self.initial_path or self._cfg.get("last_path")
+                        or ("C:\\" if platform.system() == "Windows" else "/"))
         self.entry_path.insert(0, default_path)
 
         btn_browse = ctk.CTkButton(path_frame, text="...", width=40, height=34,
                                      corner_radius=6, font=("Segoe UI", 14, "bold"),
-                                     fg_color="#2a3550", hover_color="#3b4a68",
+                                     fg_color=COL["border"], hover_color=COL["border_hi"],
                                      command=self._browse_folder)
         btn_browse.pack(side="left", padx=(6, 0))
 
         # Depth
         ctk.CTkLabel(path_frame, text="Prof:", font=("Segoe UI", 11),
-                      text_color="#5a6a85").pack(side="left", padx=(16, 4))
+                      text_color=COL["text_faint"]).pack(side="left", padx=(16, 4))
         self.spin_depth = ctk.CTkEntry(path_frame, width=45, height=34, corner_radius=6,
-                                         fg_color="#1a2235", border_color="#2a3550",
+                                         fg_color=COL["surface"], border_color=COL["border"],
                                          font=("JetBrains Mono", 12),
-                                         text_color="#e2e8f0", justify="center")
+                                         text_color=COL["text"], justify="center")
         self.spin_depth.pack(side="left")
         self.spin_depth.insert(0, str(self.initial_depth))
 
         # Exclude
         ctk.CTkLabel(path_frame, text="Exclure:", font=("Segoe UI", 11),
-                      text_color="#5a6a85").pack(side="left", padx=(16, 4))
+                      text_color=COL["text_faint"]).pack(side="left", padx=(16, 4))
         self.entry_exclude = ctk.CTkEntry(path_frame, placeholder_text="C:\\Windows",
                                             font=("JetBrains Mono", 11),
                                             height=34, corner_radius=6, width=200,
-                                            fg_color="#1a2235", border_color="#2a3550",
-                                            text_color="#e2e8f0")
+                                            fg_color=COL["surface"], border_color=COL["border"],
+                                            text_color=COL["text"])
         self.entry_exclude.pack(side="left")
         default_exclude = ";".join(self.initial_exclude) if self.initial_exclude else (
             "C:\\Windows" if platform.system() == "Windows" else ""
@@ -465,44 +520,54 @@ class DiskAnalyzerApp(ctk.CTk):
 
         self.btn_scan = ctk.CTkButton(btn_frame, text="  Analyser", width=120, height=36,
                                         corner_radius=8, font=("Segoe UI", 13, "bold"),
-                                        fg_color="#2563eb", hover_color="#1d4ed8",
+                                        fg_color=COL["accent"], hover_color=COL["accent_hi"],
                                         command=self._start_scan)
         self.btn_scan.pack(side="left", padx=(0, 8))
 
         self.btn_cancel = ctk.CTkButton(btn_frame, text="Annuler", width=80, height=36,
                                           corner_radius=8, font=("Segoe UI", 12),
-                                          fg_color="#7f1d1d", hover_color="#991b1b",
+                                          fg_color=COL["danger"], hover_color=COL["danger_hi"],
                                           command=self._cancel_scan, state="disabled")
         self.btn_cancel.pack(side="left", padx=(0, 8))
 
         self.btn_export = ctk.CTkButton(btn_frame, text="Exporter HTML", width=120, height=36,
                                           corner_radius=8, font=("Segoe UI", 12),
-                                          fg_color="#1e3a5f", hover_color="#1e4976",
+                                          fg_color=COL["info_btn"], hover_color=COL["info_btn_hi"],
                                           command=self._export_html, state="disabled")
         self.btn_export.pack(side="left")
 
+        # Bouton bascule thème clair / sombre
+        self.btn_theme = ctk.CTkButton(
+            btn_frame,
+            text=("\u2600" if self.mode == "light" else "\u263e"),
+            width=40, height=36, corner_radius=8,
+            font=("Segoe UI Symbol", 16),
+            fg_color=COL["chrome_alt"], hover_color=COL["hover"],
+            text_color=COL["text"], command=self._toggle_theme)
+        self.btn_theme.pack(side="left", padx=(8, 0))
+
         # Progress bar (hidden by default)
         self.progress_frame = ctk.CTkFrame(self, height=3, corner_radius=0,
-                                             fg_color="#111827")
+                                             fg_color=COL["chrome_alt"])
         self.progress_frame.pack(fill="x", side="top")
         self.progress_frame.pack_propagate(False)
 
         self.progress_bar = ctk.CTkProgressBar(self.progress_frame, height=3,
                                                  corner_radius=0, mode="indeterminate",
-                                                 progress_color="#3b82f6",
-                                                 fg_color="#111827")
+                                                 progress_color=COL["accent_2"],
+                                                 fg_color=COL["chrome_alt"])
         self.progress_bar.pack(fill="x")
         self.progress_bar.set(0)
 
     def _build_tabs(self):
         """Systeme d'onglets principal."""
-        self.tabview = ctk.CTkTabview(self, corner_radius=0, fg_color="#0a0e17",
-                                        segmented_button_fg_color="#111827",
-                                        segmented_button_selected_color="#2563eb",
-                                        segmented_button_unselected_color="#1a2235",
-                                        segmented_button_selected_hover_color="#1d4ed8",
-                                        segmented_button_unselected_hover_color="#2a3550",
-                                        text_color="#e2e8f0",
+        self.tabview = ctk.CTkTabview(self, corner_radius=0, fg_color=COL["bg"],
+                                        segmented_button_fg_color=COL["chrome_alt"],
+                                        segmented_button_selected_color=COL["accent"],
+                                        segmented_button_unselected_color=COL["surface"],
+                                        segmented_button_selected_hover_color=COL["accent_hi"],
+                                        segmented_button_unselected_hover_color=COL["border"],
+                                        text_color=COL["text"],
                                         border_width=0)
         self.tabview.pack(fill="both", expand=True, padx=0, pady=0)
 
@@ -524,7 +589,7 @@ class DiskAnalyzerApp(ctk.CTk):
 
     def _build_overview_tab(self, parent):
         """Onglet vue d'ensemble avec stats et top dossiers."""
-        self.overview_frame = ctk.CTkScrollableFrame(parent, fg_color="#0a0e17",
+        self.overview_frame = ctk.CTkScrollableFrame(parent, fg_color=COL["bg"],
                                                        corner_radius=0)
         self.overview_frame.pack(fill="both", expand=True)
 
@@ -532,25 +597,25 @@ class DiskAnalyzerApp(ctk.CTk):
         self.overview_placeholder = ctk.CTkLabel(
             self.overview_frame,
             text="Lancez une analyse pour voir les resultats",
-            font=("Segoe UI", 16), text_color="#5a6a85"
+            font=("Segoe UI", 16), text_color=COL["text_faint"]
         )
         self.overview_placeholder.pack(pady=100)
 
     def _build_tree_tab(self, parent):
         """Onglet arborescence interactive."""
         # Search bar
-        search_frame = ctk.CTkFrame(parent, fg_color="#0a0e17", height=44, corner_radius=0)
+        search_frame = ctk.CTkFrame(parent, fg_color=COL["bg"], height=44, corner_radius=0)
         search_frame.pack(fill="x", padx=12, pady=(8, 0))
 
         self.tree_search = ctk.CTkEntry(search_frame, placeholder_text="Rechercher un dossier...",
                                           font=("Segoe UI", 12), height=34, corner_radius=6,
-                                          fg_color="#1a2235", border_color="#2a3550",
-                                          text_color="#e2e8f0")
+                                          fg_color=COL["surface"], border_color=COL["border"],
+                                          text_color=COL["text"])
         self.tree_search.pack(fill="x", padx=4, pady=4)
         self.tree_search.bind("<KeyRelease>", self._filter_tree)
 
         # Treeview
-        tree_frame = ctk.CTkFrame(parent, fg_color="#1a2235", corner_radius=8)
+        tree_frame = ctk.CTkFrame(parent, fg_color=COL["surface"], corner_radius=8)
         tree_frame.pack(fill="both", expand=True, padx=12, pady=8)
 
         columns = ("size", "files", "pct")
@@ -579,19 +644,19 @@ class DiskAnalyzerApp(ctk.CTk):
     def _build_files_tab(self, parent):
         """Onglet top fichiers avec tableau triable."""
         # Search
-        search_frame = ctk.CTkFrame(parent, fg_color="#0a0e17", height=44, corner_radius=0)
+        search_frame = ctk.CTkFrame(parent, fg_color=COL["bg"], height=44, corner_radius=0)
         search_frame.pack(fill="x", padx=12, pady=(8, 0))
 
         self.file_search = ctk.CTkEntry(search_frame,
                                           placeholder_text="Rechercher un fichier, extension, chemin...",
                                           font=("Segoe UI", 12), height=34, corner_radius=6,
-                                          fg_color="#1a2235", border_color="#2a3550",
-                                          text_color="#e2e8f0")
+                                          fg_color=COL["surface"], border_color=COL["border"],
+                                          text_color=COL["text"])
         self.file_search.pack(fill="x", padx=4, pady=4)
         self.file_search.bind("<KeyRelease>", self._filter_files)
 
         # Treeview table
-        table_frame = ctk.CTkFrame(parent, fg_color="#1a2235", corner_radius=8)
+        table_frame = ctk.CTkFrame(parent, fg_color=COL["surface"], corner_radius=8)
         table_frame.pack(fill="both", expand=True, padx=12, pady=8)
 
         columns = ("name", "size", "ext", "modified", "path")
@@ -626,14 +691,14 @@ class DiskAnalyzerApp(ctk.CTk):
 
     def _build_extensions_tab(self, parent):
         """Onglet repartition par extension."""
-        self.ext_frame = ctk.CTkScrollableFrame(parent, fg_color="#0a0e17",
+        self.ext_frame = ctk.CTkScrollableFrame(parent, fg_color=COL["bg"],
                                                   corner_radius=0)
         self.ext_frame.pack(fill="both", expand=True)
 
         self.ext_placeholder = ctk.CTkLabel(
             self.ext_frame,
             text="Lancez une analyse pour voir la repartition par extension",
-            font=("Segoe UI", 16), text_color="#5a6a85"
+            font=("Segoe UI", 16), text_color=COL["text_faint"]
         )
         self.ext_placeholder.pack(pady=100)
 
@@ -657,6 +722,9 @@ class DiskAnalyzerApp(ctk.CTk):
         if not path or not os.path.isdir(path):
             messagebox.showerror("Erreur", f"Le chemin '{path}' n'existe pas ou n'est pas accessible.")
             return
+
+        # Mémorise chemin / profondeur / thème pour la prochaine session
+        self._save_config()
 
         exclude_str = self.entry_exclude.get().strip()
         exclude_list = [e.strip() for e in exclude_str.split(";") if e.strip()]
@@ -789,12 +857,12 @@ class DiskAnalyzerApp(ctk.CTk):
         ]
 
         for i, (label, value, color) in enumerate(stats):
-            card = ctk.CTkFrame(cards_frame, fg_color="#1a2235", corner_radius=10,
-                                 border_width=1, border_color="#2a3550")
+            card = ctk.CTkFrame(cards_frame, fg_color=COL["surface"], corner_radius=10,
+                                 border_width=1, border_color=COL["border"])
             card.pack(side="left", fill="x", expand=True, padx=4)
 
             ctk.CTkLabel(card, text=label.upper(), font=("Segoe UI", 10),
-                          text_color="#5a6a85").pack(padx=16, pady=(14, 2), anchor="w")
+                          text_color=COL["text_faint"]).pack(padx=16, pady=(14, 2), anchor="w")
             ctk.CTkLabel(card, text=value, font=("JetBrains Mono", 22, "bold"),
                           text_color=color).pack(padx=16, pady=(0, 4), anchor="w")
 
@@ -803,43 +871,43 @@ class DiskAnalyzerApp(ctk.CTk):
                 if len(name) > 30:
                     name = name[:27] + "..."
                 ctk.CTkLabel(card, text=name, font=("Segoe UI", 10),
-                              text_color="#5a6a85").pack(padx=16, pady=(0, 12), anchor="w")
+                              text_color=COL["text_faint"]).pack(padx=16, pady=(0, 12), anchor="w")
             else:
                 ctk.CTkLabel(card, text=" ", font=("Segoe UI", 10)).pack(padx=16, pady=(0, 12))
 
         # --- Top directories table ---
         if self.tree_data.children:
             ctk.CTkLabel(parent, text="Top dossiers par taille",
-                          font=("Segoe UI", 15, "bold"), text_color="#e2e8f0",
+                          font=("Segoe UI", 15, "bold"), text_color=COL["text"],
                           anchor="w").pack(fill="x", padx=16, pady=(8, 8))
 
             top_dirs = self.tree_data.children[:20]
             max_size = top_dirs[0].size if top_dirs else 1
 
             for i, d in enumerate(top_dirs):
-                row = ctk.CTkFrame(parent, fg_color="#1a2235" if i % 2 == 0 else "#151d2e",
+                row = ctk.CTkFrame(parent, fg_color=COL["surface"] if i % 2 == 0 else COL["surface_alt"],
                                      corner_radius=4, height=36)
                 row.pack(fill="x", padx=12, pady=1)
                 row.pack_propagate(False)
 
                 # Rank
                 ctk.CTkLabel(row, text=f"#{i+1}", font=("JetBrains Mono", 11),
-                              text_color="#5a6a85", width=40).pack(side="left", padx=(12, 4))
+                              text_color=COL["text_faint"], width=40).pack(side="left", padx=(12, 4))
 
                 # Name
                 ctk.CTkLabel(row, text=f"  {d.name}", font=("Segoe UI", 12),
-                              text_color="#e2e8f0", anchor="w").pack(side="left", fill="x",
+                              text_color=COL["text"], anchor="w").pack(side="left", fill="x",
                                                                        expand=True)
 
                 # File count
                 ctk.CTkLabel(row, text=f"{d.file_count:,} fich.",
-                              font=("JetBrains Mono", 10), text_color="#5a6a85",
+                              font=("JetBrains Mono", 10), text_color=COL["text_faint"],
                               width=90).pack(side="right", padx=(4, 12))
 
                 # Size
                 pct = (d.size / self.tree_data.size * 100) if self.tree_data.size > 0 else 0
                 ctk.CTkLabel(row, text=f"{pct:.1f}%",
-                              font=("JetBrains Mono", 10), text_color="#5a6a85",
+                              font=("JetBrains Mono", 10), text_color=COL["text_faint"],
                               width=50).pack(side="right", padx=4)
 
                 ctk.CTkLabel(row, text=format_size(d.size),
@@ -848,7 +916,7 @@ class DiskAnalyzerApp(ctk.CTk):
                               width=100, anchor="e").pack(side="right", padx=4)
 
                 # Bar
-                bar_frame = ctk.CTkFrame(row, fg_color="#0a0e17", width=150, height=8,
+                bar_frame = ctk.CTkFrame(row, fg_color=COL["track"], width=150, height=8,
                                            corner_radius=4)
                 bar_frame.pack(side="right", padx=(8, 4))
                 bar_frame.pack_propagate(False)
@@ -919,8 +987,8 @@ class DiskAnalyzerApp(ctk.CTk):
                 row_frame.pack(fill="x", padx=8, pady=2)
 
             color = colors[i % len(colors)]
-            card = ctk.CTkFrame(row_frame, fg_color="#1a2235", corner_radius=8,
-                                 border_width=1, border_color="#2a3550")
+            card = ctk.CTkFrame(row_frame, fg_color=COL["surface"], corner_radius=8,
+                                 border_width=1, border_color=COL["border"])
             card.pack(side="left", fill="x", expand=True, padx=4, pady=4)
 
             inner = ctk.CTkFrame(card, fg_color="transparent")
@@ -931,7 +999,7 @@ class DiskAnalyzerApp(ctk.CTk):
             top.pack(fill="x")
 
             ctk.CTkLabel(top, text=f"#{i+1}", font=("JetBrains Mono", 10),
-                          text_color="#5a6a85").pack(side="left", padx=(0, 8))
+                          text_color=COL["text_faint"]).pack(side="left", padx=(0, 8))
 
             badge = ctk.CTkFrame(top, fg_color=color, corner_radius=4, height=24)
             badge.pack(side="left")
@@ -941,15 +1009,15 @@ class DiskAnalyzerApp(ctk.CTk):
 
             ctk.CTkLabel(top, text=format_size(ext["size"]),
                           font=("JetBrains Mono", 14, "bold"),
-                          text_color="#e2e8f0").pack(side="right")
+                          text_color=COL["text"]).pack(side="right")
 
             # Count
             ctk.CTkLabel(inner, text=f"{ext['count']:,} fichier{'s' if ext['count'] > 1 else ''}",
-                          font=("Segoe UI", 11), text_color="#5a6a85",
+                          font=("Segoe UI", 11), text_color=COL["text_faint"],
                           anchor="w").pack(fill="x", pady=(4, 6))
 
             # Bar
-            bar_bg = ctk.CTkFrame(inner, fg_color="#0a0e17", height=6, corner_radius=3)
+            bar_bg = ctk.CTkFrame(inner, fg_color=COL["track"], height=6, corner_radius=3)
             bar_bg.pack(fill="x")
             bar_bg.pack_propagate(False)
             bar_pct = ext["size"] / max_size if max_size > 0 else 0
@@ -1062,51 +1130,65 @@ class DiskAnalyzerApp(ctk.CTk):
             messagebox.showerror("Erreur", f"Impossible d'exporter : {e}")
 
     def _generate_html_report(self) -> str:
-        """Genere un rapport HTML autonome (reutilise le template du script PS)."""
+        """Génère un rapport HTML autonome, thème assorti à l'application."""
+        if self.mode == "light":
+            css_vars = ("--bg:#ffffff;--fg:#1a2432;--muted:#586377;"
+                        "--line:#e2e6ec;--head:#f1f4f8;--hover:#eef4ff")
+        else:
+            css_vars = ("--bg:#0d1117;--fg:#e6ebf2;--muted:#8592a6;"
+                        "--line:#222c3e;--head:#141a26;--hover:#141c2e")
 
-        def tree_to_dict(folder):
-            if not folder:
-                return None
-            d = {
-                "name": folder.name,
-                "path": folder.path,
-                "size": folder.size,
-                "files": folder.file_count,
-                "children": []
-            }
-            for child in folder.children:
-                cd = tree_to_dict(child)
-                if cd:
-                    d["children"].append(cd)
-            return d
+        def esc(s):
+            return html.escape(str(s), quote=True)
 
-        tree_json = json.dumps(tree_to_dict(self.tree_data), ensure_ascii=False)
-        files_json = json.dumps([
-            {"name": f.name, "path": f.path, "size": f.size,
-             "ext": f.extension, "modified": f.modified}
-            for f in self.top_files[:200]
-        ], ensure_ascii=False)
-        ext_json = json.dumps(self.ext_stats[:30], ensure_ascii=False)
+        rows_files = "".join(
+            f"<tr><td>{i+1}</td><td>{esc(f.name)}</td>"
+            f"<td class='mono'>{format_size(f.size)}</td>"
+            f"<td>{esc(f.extension)}</td><td>{esc(f.modified)}</td>"
+            f"<td class='path' title='{esc(f.path)}'>{esc(f.path)}</td></tr>"
+            for i, f in enumerate(self.top_files[:200])
+        )
+        rows_ext = "".join(
+            f"<tr><td>{i+1}</td><td><b>{esc(e['ext'])}</b></td>"
+            f"<td class='mono'>{format_size(e['size'])}</td>"
+            f"<td>{e['count']:,}</td></tr>"
+            for i, e in enumerate(self.ext_stats[:30])
+        )
 
-        # Minimal HTML report
         return f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>DiskAnalyzer Report</title>
-<style>body{{font-family:sans-serif;background:#0a0e17;color:#e2e8f0;padding:20px}}
-table{{border-collapse:collapse;width:100%}}th,td{{padding:8px 12px;text-align:left;
-border-bottom:1px solid #2a3550}}th{{background:#111827;color:#8899b4;font-size:12px}}
-tr:hover{{background:rgba(59,130,246,0.08)}}.mono{{font-family:monospace}}</style></head>
-<body><h1>DiskAnalyzer - {platform.node()}</h1>
-<p>Date: {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
-<p>Espace analyse: {format_size(self.tree_data.size)} | Fichiers: {self.scanner.scanned_files:,}</p>
-<h2>Top 200 fichiers</h2><table><thead><tr><th>#</th><th>Nom</th><th>Taille</th>
-<th>Extension</th><th>Modifie</th><th>Chemin</th></tr></thead><tbody>
-{''.join(f"<tr><td>{i+1}</td><td>{f.name}</td><td class='mono'>{format_size(f.size)}</td><td>{f.extension}</td><td>{f.modified}</td><td style='font-size:11px;color:#5a6a85'>{f.path}</td></tr>" for i, f in enumerate(self.top_files[:200]))}
-</tbody></table>
-<h2>Par extension</h2><table><thead><tr><th>#</th><th>Extension</th><th>Taille totale</th>
-<th>Fichiers</th></tr></thead><tbody>
-{''.join(f"<tr><td>{i+1}</td><td><b>{e['ext']}</b></td><td class='mono'>{format_size(e['size'])}</td><td>{e['count']:,}</td></tr>" for i, e in enumerate(self.ext_stats[:30]))}
-</tbody></table>
-<script>var treeData={tree_json};var topFiles={files_json};var extStats={ext_json};</script>
+<html lang="fr"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DiskAnalyzer — {esc(platform.node())}</title>
+<style>
+:root{{{css_vars}}}
+*{{box-sizing:border-box}}
+body{{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--fg);
+margin:0 auto;padding:32px;max-width:1200px}}
+h1{{font-size:22px;margin:0 0 4px}}
+h2{{font-size:16px;margin:28px 0 10px}}
+.meta{{color:var(--muted);font-size:13px;margin-bottom:6px}}
+table{{border-collapse:collapse;width:100%;font-size:13px}}
+th,td{{padding:7px 12px;text-align:left;border-bottom:1px solid var(--line)}}
+th{{background:var(--head);color:var(--muted);font-size:12px;position:sticky;top:0}}
+tr:hover td{{background:var(--hover)}}
+.mono{{font-family:Consolas,monospace}}
+.path{{font-size:11px;color:var(--muted);max-width:460px;overflow:hidden;
+text-overflow:ellipsis;white-space:nowrap}}
+</style></head>
+<body>
+<h1>DiskAnalyzer — {esc(platform.node())}</h1>
+<div class="meta">Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}</div>
+<div class="meta">Espace analysé : <b>{format_size(self.tree_data.size)}</b>
+&nbsp;•&nbsp; {self.scanner.scanned_files:,} fichiers
+&nbsp;•&nbsp; {self.scanner.scanned_dirs:,} dossiers</div>
+<h2>Top 200 fichiers</h2>
+<table><thead><tr><th>#</th><th>Nom</th><th>Taille</th><th>Extension</th>
+<th>Modifié</th><th>Chemin</th></tr></thead>
+<tbody>{rows_files}</tbody></table>
+<h2>Répartition par extension</h2>
+<table><thead><tr><th>#</th><th>Extension</th><th>Taille totale</th>
+<th>Fichiers</th></tr></thead>
+<tbody>{rows_ext}</tbody></table>
 </body></html>"""
 
     # -------------------------------------------------------------------------
@@ -1123,6 +1205,57 @@ tr:hover{{background:rgba(59,130,246,0.08)}}.mono{{font-family:monospace}}</styl
                 self.scanner.current_dir
             )
         self.after(self._poll_interval, self._start_poll)
+
+    # -------------------------------------------------------------------------
+    # THÈME & CONFIG
+    # -------------------------------------------------------------------------
+
+    def _toggle_theme(self):
+        """Bascule clair <-> sombre. CTk repeint ses widgets tout seul ;
+        on restyle uniquement les ttk.Treeview (non gérés par CTk)."""
+        self.mode = "dark" if self.mode == "light" else "light"
+        ctk.set_appearance_mode(self.mode)
+        self._style_treeview()
+        self._update_theme_button()
+        self._save_config()
+
+    def _update_theme_button(self):
+        self.btn_theme.configure(text=("\u2600" if self.mode == "light" else "\u263e"))
+
+    def _style_treeview(self):
+        """Réapplique le style ttk au mode courant. Les changements de style ttk
+        sont appliqués en direct : inutile de réinsérer les lignes de l'arbre/table."""
+        StyledTreeview.configure_style(self.mode)
+
+    @staticmethod
+    def _config_path() -> str:
+        base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
+        d = os.path.join(base, "DiskAnalyzer")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
+        return os.path.join(d, "config.json")
+
+    def _load_config(self) -> dict:
+        try:
+            with open(self._config_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_config(self):
+        data = {
+            "theme": self.mode,
+            "last_path": self.entry_path.get().strip(),
+            "depth": self.spin_depth.get().strip(),
+        }
+        try:
+            with open(self._config_path(), "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except OSError:
+            pass
 
 
 # =============================================================================

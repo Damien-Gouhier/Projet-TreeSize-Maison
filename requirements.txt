@@ -1,0 +1,4 @@
+# DiskAnalyzer - dépendances
+# customtkinter >= 5.2 : support des couleurs en tuple (clair, sombre) + CTkScrollableFrame
+# testé avec la 6.0.0
+customtkinter>=5.2.0
